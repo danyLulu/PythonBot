@@ -1,4 +1,5 @@
 from telegram.ext import Application, CommandHandler, CallbackQueryHandler, ConversationHandler, MessageHandler, filters
+from telegram import Update, InlineKeyboardButton, InlineKeyboardMarkup
 import openai
 import os
 from dotenv import load_dotenv
@@ -10,12 +11,20 @@ from gpt_service.gpt import gpt, gpt_dialog
 from osnov_servis.random_facts import get_random_fact
 from osnov_servis.talk import talk, talk_dialog, load_character_prompt
 from osnov_servis.shared import dialog, chatgpt
-from osnov_servis.image_service import ImageGenerationService
 from osnov_servis.quiz import (
     quiz_command, quiz_start, topic_selected,
     handle_quiz_answer, handle_quiz_callback,
     SELECTING_TOPIC, ANSWERING_QUESTION
 )
+from osnov_servis.business_ideas import (
+    business_command, business_start, category_selected,
+    handle_business_callback, SELECTING_CATEGORY, GENERATING_IDEA
+)
+
+import requests
+from io import BytesIO
+import httpx
+
 from telegram import InputMediaPhoto
 
 # Загружаем переменные окружения
@@ -27,13 +36,7 @@ missing_vars = [var for var in required_env_vars if not os.getenv(var)]
 if missing_vars:
     raise ValueError(f"Отсутствуют необходимые переменные окружения: {', '.join(missing_vars)}")
 
-# Инициализируем генератор изображений
-try:
-    image_generator = ImageGenerationService(
-        api_key=os.getenv("CHATGPT_TOKEN")
-    )
-except Exception as e:
-    raise RuntimeError(f"Ошибка при инициализации генератора изображений: {e}")
+
 
 # Инициализируем приложение Telegram
 try:
@@ -42,6 +45,7 @@ except Exception as e:
     raise RuntimeError(f"Ошибка при инициализации Telegram бота: {e}")
 
 async def start(update, context):
+    """Обработчик команды /start"""
     dialog.mode = "main"
     text = load_message("main")
     await send_photo(update, context, "main")
@@ -51,56 +55,32 @@ async def start(update, context):
         "gpt": "задать вопрос чату GPT 🧠",
         "talk": "переписка со звездами 😈",
         "fact": "рандомный факт",
-        "images": "генирация картинок",
-        "quiz": "проверь свои знания 🎯"
+        "quiz": "проверь свои знания 🎯",
+        "business": "генератор идей для бизнеса 💡"
     })
 
-
 async def talk_button(update, context):
-    query = update.callback_query.data
-    await update.callback_query.answer()
-
-    await send_photo(update, context, query)
+    """Обработчик кнопки диалога с личностями"""
+    query = update.callback_query
+    await query.answer()
+    await send_photo(update, context, query.data)
     await send_text(update, context, "отличный выбор! Можете начать общаться!")
-
-    # Загружаем промпт для выбранного персонажа
-    prompt = load_character_prompt(query)
+    prompt = load_character_prompt(query.data)
     chatgpt.set_prompt(prompt)
 
-
 async def random_fact(update, context):
+    """Обработчик команды случайного факта"""
     fact = get_random_fact()
-    await send_photo(update,context, "facts")
+    await send_photo(update, context, "facts")
     await send_text(update, context, f"📚 Интересный факт:\n\n{fact}")
 
+async def business_button(update, context):
+    """Обработчик кнопки генератора идей"""
+    query = update.callback_query
+    await query.answer()
+    return await business_start(update, context)
 
-
-async def images(update, context):
-
-    dialog.mode = "images"
-    await send_photo(update, context, "images")
-    try:
-        text = load_message("images")
-    except FileNotFoundError:
-        text = "Напишите, какую картинку вы хотите сгенерировать." # Текст по умолчанию
-    # Убрал отправку фото здесь
-    # await send_photo(update, context, "generate_image")
-    await send_text(update, context, text)
-
-
-async def images_dialog(update, context):
-    prompt = update.message.text
-    my_message = await send_text(update, context, "Генерирую картинку...")
-
-    # Отправляем промпт модели генерации изображений
-    image_bytes = await image_generator.create_images(prompt)
-    await my_message.delete() # Удаляем сообщение "Генерирую..."
-
-    # Отправляем сгенерированное изображение
-    await update.message.reply_photo(photo=image_bytes, caption=f"Картинка по запросу: {prompt}")
-
-
-# Добавляем обработчики для квиза
+# Создаем обработчики для квиза
 quiz_handler = ConversationHandler(
     entry_points=[
         CommandHandler('quiz', quiz_command),
@@ -124,19 +104,52 @@ quiz_handler = ConversationHandler(
     name="quiz_conversation"
 )
 
+# Создаем обработчики для генератора идей
+business_handler = ConversationHandler(
+    entry_points=[
+        CommandHandler('business', business_command),
+        CallbackQueryHandler(business_start, pattern='^business_interface$')
+    ],
+    states={
+        SELECTING_CATEGORY: [
+            CallbackQueryHandler(category_selected, pattern=r'^business_category_'),
+            CallbackQueryHandler(handle_business_callback, pattern=r'^business_'),
+            CallbackQueryHandler(handle_business_callback, pattern=r'^main_menu$')
+        ],
+        GENERATING_IDEA: [
+            CallbackQueryHandler(handle_business_callback, pattern=r'^business_'),
+            CallbackQueryHandler(handle_business_callback, pattern=r'^main_menu$')
+        ]
+    },
+    fallbacks=[
+        CommandHandler('business', business_command),
+        CallbackQueryHandler(business_start, pattern='^business_interface$')
+    ],
+    per_chat=True,
+    name="business_conversation"
+)
+
 # Добавляем обработчики в правильном порядке
-application.add_handler(quiz_handler)  # Сначала добавляем ConversationHandler
+# Сначала добавляем ConversationHandler'ы
+application.add_handler(business_handler)
+application.add_handler(quiz_handler)
+
+# Затем добавляем обработчики команд
 application.add_handler(CommandHandler("start", start))
 application.add_handler(CommandHandler("gpt", gpt))
 application.add_handler(CommandHandler("talk", talk))
 application.add_handler(CommandHandler("fact", random_fact))
-application.add_handler(CommandHandler("images", images))
-application.add_handler(CommandHandler("quiz", quiz_command))
+application.add_handler(CommandHandler("business", business_command))
+
 # Добавляем обработчики для диалогов
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, talk_dialog))
 application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, gpt_dialog))
-application.add_handler(MessageHandler(filters.TEXT & ~filters.COMMAND, images_dialog))
 
+# Добавляем обработчики для кнопок
 application.add_handler(CallbackQueryHandler(talk_button, pattern="^talk_.*"))
-application.run_polling()
+application.add_handler(CallbackQueryHandler(business_button, pattern="^business_interface$"))
+
+# Запускаем бота
+if __name__ == '__main__':
+    application.run_polling(allowed_updates=Update.ALL_TYPES)
 
