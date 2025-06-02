@@ -38,8 +38,3 @@ async def talk_dialog(update, context):
     my_message = await send_text(update, context, "пишет...")
     answer = await chatgpt.add_message(text)
     await my_message.edit_text(answer)
-
-
-
-
-

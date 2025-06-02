@@ -1,34 +1,39 @@
-from openai import OpenAI
-import base64
-import io
-from PIL import Image
+import openai
+import requests
+from io import BytesIO
+import httpx
+
+class ImageGenerationService:
+    def __init__(self, api_key):
+        self.api_key = api_key
+        proxies = {
+            "http://": "http://18.199.183.77:49232",
+            "https://": "http://18.199.183.77:49232"
+        }
+        self.client = openai.OpenAI(
+            http_client=httpx.Client(transport=httpx.HTTPTransport(proxy=proxies["http://"])),
+            api_key=api_key
+        )
+
+    async def create_images(self, prompt):
+        # Отправляем запрос к DALL-E
+        response = self.client.images.generate(
+            model="dall-e-3",
+            prompt=prompt,
+            size="1024x1024",
+            quality="standard",
+            n=1
+        )
+
+        # Получаем URL сгенерированного изображения
+        image_url = response.data[0].url
+
+        # Загружаем изображение по URL
+        image_response = requests.get(image_url)
+        image_bytes = BytesIO(image_response.content).getvalue()
+
+        return image_bytes
+
 
 class ImageGenerator:
-    def __init__(self, api_key):
-        self.client = OpenAI(api_key=api_key)
-
-    async def create_images(self, prompt: str) -> bytes:
-        try:
-            # Генерируем изображение
-            response = self.client.images.generate(
-                model="dall-e-3",
-                prompt=prompt,
-                size="1024x1024",
-                quality="standard",
-                n=1,
-            )
-
-            # Получаем URL изображения
-            image_url = response.data[0].url
-
-            # Скачиваем изображение
-            import requests
-            response = requests.get(image_url)
-            if response.status_code == 200:
-                return response.content
-            else:
-                raise Exception(f"Failed to download image: {response.status_code}")
-
-        except Exception as e:
-            print(f"Error in image generation: {e}")
-            raise 
+    pass

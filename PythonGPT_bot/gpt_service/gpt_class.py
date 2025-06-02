@@ -22,7 +22,7 @@ class ChatGptService:
             "https://": "http://18.199.183.77:49232"
         }
         self.client = openai.OpenAI(
-            http_client=httpx.Client(proxies=proxies),
+            http_client=httpx.Client(transport=httpx.HTTPTransport(proxy=proxies["http://"])),
             api_key=token
         )
         self.message_list = []
